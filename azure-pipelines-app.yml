@@ -16,7 +16,7 @@ steps:
 - task: UseDotNet@2
   inputs:
     packageType: 'sdk'
-    version: '8.x'
+    version: '10.x'
 
 - script: dotnet publish WebApp/WebApp.csproj --configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/publish
   displayName: 'Compilation et Publication .NET'
