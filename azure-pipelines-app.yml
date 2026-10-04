@@ -12,22 +12,120 @@ pool:
 
 variables:
   buildConfiguration: 'Release'
+  azureSubscription: 'Azure-8CLD201'
+  resourceGroupName: 'MonGroupeDeRessources'
+  vmName: 'MaVM-Test'
 
-steps:
-- task: UseDotNet@2
-  inputs:
-    packageType: 'sdk'
-    version: '10.x'
+stages:
+- stage: Build
+  jobs:
+  - job: Build
+    steps:
+    - task: UseDotNet@2
+      inputs:
+        packageType: 'sdk'
+        version: '10.x'
 
-- script: dotnet publish WebApp/WebApp.csproj --configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/publish
-  displayName: 'Compilation et Publication .NET'
+    - script: dotnet publish WebApp/WebApp.csproj --configuration $(buildConfiguration) --runtime linux-x64 --self-contained true --output $(Build.ArtifactStagingDirectory)/publish
+      displayName: 'Compilation et Publication .NET (linux-x64)'
 
-- task: PublishBuildArtifacts@1
-  inputs:
-    PathtoPublish: '$(Build.ArtifactStagingDirectory)/publish'
-    ArtifactName: 'webAppArtifact'
-    publishLocation: 'Container'
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/publish'
+        ArtifactName: 'webAppArtifact'
+        publishLocation: 'Container'
 
-- script: |
-    echo "Récupération des fichiers compilés et déploiement sur la VM Linux..."
-  displayName: 'Déploiement sur la machine cible'
+- stage: Deploy
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - job: Deploy
+    steps:
+    - checkout: none
+
+    - task: DownloadBuildArtifacts@1
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'webAppArtifact'
+        downloadPath: '$(System.ArtifactsDirectory)'
+
+    - task: AzureCLI@2
+      displayName: 'Déploiement sur la machine cible'
+      inputs:
+        azureSubscription: '$(azureSubscription)'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          $ErrorActionPreference = 'Stop'
+          $rg = '$(resourceGroupName)'
+          $vm = '$(vmName)'
+          $blob = 'webapp-$(Build.BuildId).tar.gz'
+          $archive = Join-Path '$(Agent.TempDirectory)' $blob
+          $scriptFile = Join-Path '$(Agent.TempDirectory)' 'deploy.sh'
+
+          & "$env:SystemRoot\System32\tar.exe" -czf $archive -C '$(System.ArtifactsDirectory)\webAppArtifact' .
+          if ($LASTEXITCODE -ne 0) { throw "Echec de la creation de l'archive" }
+
+          $storage = az storage account list -g $rg --query "[0].name" -o tsv
+          if (-not $storage) { throw "Aucun compte de stockage dans $rg : lancer d'abord le pipeline Dev-Infra" }
+          $key = az storage account keys list -g $rg -n $storage --query "[0].value" -o tsv
+          Write-Host "##vso[task.setsecret]$key"
+
+          echo "Envoi de l'artefact vers $storage..."
+          az storage blob upload --account-name $storage --account-key $key -c deploy -n $blob -f $archive --overwrite --only-show-errors
+          if ($LASTEXITCODE -ne 0) { throw "Echec de l'envoi de l'artefact" }
+
+          $expiry = (Get-Date).ToUniversalTime().AddMinutes(30).ToString('yyyy-MM-ddTHH:mmZ')
+          $sas = az storage blob generate-sas --account-name $storage --account-key $key -c deploy -n $blob --permissions r --expiry $expiry --https-only -o tsv
+          Write-Host "##vso[task.setsecret]$sas"
+          $url = "https://${storage}.blob.core.windows.net/deploy/${blob}?${sas}"
+
+          $bash = @'
+          set -e
+          curl -fsSL -o /tmp/webapp.tar.gz '__URL__'
+          id webapp >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin webapp
+          dpkg -s libicu70 >/dev/null 2>&1 || (apt-get update -q && apt-get install -y -q libicu70)
+          systemctl stop webapp 2>/dev/null || true
+          rm -rf /opt/webapp && mkdir -p /opt/webapp
+          tar -xzf /tmp/webapp.tar.gz -C /opt/webapp
+          rm -f /tmp/webapp.tar.gz
+          chmod +x /opt/webapp/WebApp
+          chown -R webapp:webapp /opt/webapp
+          cat > /etc/systemd/system/webapp.service <<'EOF'
+          [Unit]
+          Description=Application ASP.NET Core WebApp
+          After=network.target
+
+          [Service]
+          WorkingDirectory=/opt/webapp
+          ExecStart=/opt/webapp/WebApp
+          Restart=always
+          RestartSec=5
+          User=webapp
+          AmbientCapabilities=CAP_NET_BIND_SERVICE
+          Environment=ASPNETCORE_URLS=http://0.0.0.0:80
+          Environment=ASPNETCORE_ENVIRONMENT=Production
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          systemctl daemon-reload
+          systemctl enable webapp
+          systemctl restart webapp
+          sleep 5
+          curl -fsS -o /dev/null http://localhost:80/ && echo DEPLOY_OK
+          '@
+          $bash = $bash.Replace('__URL__', $url) -replace "`r`n", "`n"
+          [IO.File]::WriteAllText($scriptFile, $bash)
+
+          echo "Installation de l'application sur $vm..."
+          $result = az vm run-command invoke -g $rg -n $vm --command-id RunShellScript --scripts "@$scriptFile" --query "value[0].message" -o tsv
+          Remove-Item $scriptFile, $archive -Force
+          az storage blob delete --account-name $storage --account-key $key -c deploy -n $blob --only-show-errors
+          echo $result
+          if (-not ($result -match 'DEPLOY_OK')) { throw "Le deploiement sur la VM a echoue" }
+
+          $ip = az vm show -d -g $rg -n $vm --query publicIps -o tsv
+          $status = (Invoke-WebRequest "http://$ip/" -UseBasicParsing -TimeoutSec 30).StatusCode
+          echo "Application accessible sur http://$ip/ (HTTP $status)"
