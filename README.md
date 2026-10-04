@@ -53,6 +53,15 @@ L'application tourne sous un utilisateur système `webapp` sans shell. Elle obti
 | Déployer l'application sur la VM avec l'artefact | Stage Deploy de ce pipeline (`webAppArtifact`) |
 | Agent local | Pool `Default` (agent auto-hébergé) pour les deux pipelines |
 
+## Captures d'écran
+Les captures sont réparties entre les deux dépôts :
+
+| Dépôt | Fichier | Contenu |
+|---|---|---|
+| ASP-Net-Core | `Capture d'écran 2026-10-03 213243.png` | Site en ligne sur la VM, URL `http://74.241.244.205` visible (Brave) |
+| Dev-Infra | `Capture d'écran du site web.png` | Même site, URL visible (Edge) |
+| Dev-Infra | `Capture d'écran des branches.png` | Historique du pipeline ASP-Net-Core sur `main`, dernier run (déploiement) réussi |
+
 ## Lancer en local
 ```
 dotnet run --project WebApp
