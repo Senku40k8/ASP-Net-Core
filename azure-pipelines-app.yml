@@ -5,6 +5,7 @@ trigger:
   paths:
     include:
       - WebApp/*
+      - azure-pipelines-app.yml
 
 pool:
   name: 'Default'
