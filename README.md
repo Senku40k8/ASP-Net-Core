@@ -20,19 +20,38 @@ L'infrastructure (la VM cible) est dans un dépôt séparé : [Dev-Infra](https:
 - Les bibliothèques front-end (Bootstrap, jQuery) sont versionnées dans `wwwroot/lib` comme le fait le gabarit, pour ne pas dépendre d'un gestionnaire de paquets pendant le build.
 
 ### Pourquoi un dépôt séparé de l'infrastructure
-Le code change souvent, la VM rarement. Avec deux dépôts et deux pipelines, un commit sur l'application ne relance pas le provisionnement. Ce pipeline ne se déclenche que sur `WebApp/*` ou sur son propre YAML.
+Le code change souvent, la VM rarement. Avec deux dépôts et deux pipelines, un commit sur l'application ne relance pas le provisionnement. Ce pipeline ne se déclenche que sur `WebApp/*` ou sur son propre YAML. Il suppose que l'infrastructure existe déjà, et s'arrête avec un message clair si le pipeline Dev-Infra n'a pas encore tourné.
 
 ### Pipeline
-1. `UseDotNet@2` installe le SDK `10.x` : il doit correspondre au `TargetFramework` du projet (`net10.0`), sinon le build échoue (NETSDK1045).
-2. `dotnet publish` en `Release` vers le dossier d'artefacts.
-3. `PublishBuildArtifacts@1` publie le résultat sous le nom `webAppArtifact`, ce qui garde une trace de chaque build.
-4. Déploiement sur la VM : étape présente mais pas encore implémentée (copie prévue en SSH/SCP vers l'IP renvoyée par le déploiement Dev-Infra).
+Deux stages, exécutés sur le même agent local que Dev-Infra (pool `Default`, machine Windows) :
 
-Le pipeline utilise le même agent local que Dev-Infra (pool `Default`). Les scripts `script:` y sont exécutés par `cmd.exe`.
+**Build**
+1. `UseDotNet@2` installe le SDK `10.x` : il doit correspondre au `TargetFramework` du projet (`net10.0`), sinon le build échoue (NETSDK1045).
+2. `dotnet publish` en `Release` pour `linux-x64`, en mode self-contained : le runtime .NET est inclus, rien à installer sur la VM.
+3. `PublishBuildArtifacts@1` publie le résultat sous le nom `webAppArtifact`.
+
+**Deploy** (seulement si le Build réussit)
+1. `DownloadBuildArtifacts@1` récupère `webAppArtifact`. Pas de checkout du code : on déploie exactement ce qui a été construit.
+2. L'artefact est compressé et envoyé dans le compte de stockage créé par Dev-Infra.
+3. `az vm run-command` exécute un script sur la VM. Ce script télécharge l'archive via un lien SAS, l'installe dans `/opt/webapp` et la lance comme service systemd (`webapp.service`) sur le port 80.
+4. L'archive est supprimée du stockage, puis le pipeline vérifie que le site répond en HTTP sur l'IP publique.
+
+Pourquoi `run-command` plutôt que SSH/SCP : l'agent Windows n'a pas de moyen simple de passer un mot de passe à SSH. Une clé SSH aurait été un secret de plus à gérer, et il aurait fallu ouvrir le port 22. Ici, tout passe par la service connection Azure déjà utilisée par Dev-Infra.
+
+L'application tourne sous un utilisateur système `webapp` sans shell. Elle obtient seulement la capacité d'écouter sur le port 80 (`CAP_NET_BIND_SERVICE`), pas les droits root. Le service redémarre automatiquement en cas d'arrêt ou de reboot.
 
 ### Gestion des secrets
 - Aucun secret dans le dépôt. `appsettings.json` ne contient que la configuration de logs.
-- Le futur déploiement SSH utilisera une variable secrète ou un fichier sécurisé (Secure Files) d'Azure DevOps pour l'accès à la VM, jamais une valeur en clair dans le YAML.
+- Accès à Azure via la service connection `Azure-8CLD201` (fédération d'identité, aucun secret stocké), limitée au groupe de ressources `MonGroupeDeRessources`.
+- La clé du compte de stockage est lue au moment du déploiement, jamais écrite, et masquée dans les logs (`task.setsecret`).
+- Le lien SAS donné à la VM est en lecture seule, limité à un seul fichier, HTTPS uniquement, et expire après 30 minutes. Il est lui aussi masqué dans les logs.
+
+## Consignes couvertes
+| Consigne | Où |
+|---|---|
+| Provisionner la VM | Pipeline du dépôt Dev-Infra |
+| Déployer l'application sur la VM avec l'artefact | Stage Deploy de ce pipeline (`webAppArtifact`) |
+| Agent local | Pool `Default` (agent auto-hébergé) pour les deux pipelines |
 
 ## Lancer en local
 ```
