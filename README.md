@@ -17,7 +17,7 @@ L'infrastructure (la VM cible) est dans un dépôt séparé : [Dev-Infra](https:
 - Gabarit par défaut « Application web ASP.NET Core » (Razor Pages), sans modification : l'objectif est de valider la chaîne CI/CD, pas le contenu de l'application.
 - .NET 10, version du SDK installée sur le poste. Solution au nouveau format `.slnx`.
 - `.gitignore` .NET standard : `bin/` et `obj/` ne sont pas versionnés, le pipeline recompile tout.
-- Les bibliothèques front-end (Bootstrap, jQuery) sont versionnées dans `wwwroot/lib` comme le fait le gabarit, pour ne pas dépendre d'un gestionnaire de paquets pendant le build.
+- Les bibliothèques front-end (Bootstrap, jQuery, jQuery Validation) sont versionnées dans `wwwroot/lib` comme le fait le gabarit, pour ne pas dépendre d'un gestionnaire de paquets ni d'un CDN. Seuls les fichiers réellement chargés par les pages sont conservés (versions minifiées + licences) : les sources non minifiées, les cartes `.map`, les variantes RTL/ESM et les feuilles partielles du gabarit ont été retirées (~9 Mo de moins dans le dépôt et dans l'artefact déployé).
 
 ### Pourquoi un dépôt séparé de l'infrastructure
 Le code change souvent, la VM rarement. Avec deux dépôts et deux pipelines, un commit sur l'application ne relance pas le provisionnement. Ce pipeline ne se déclenche que sur `WebApp/*` ou sur son propre YAML. Il suppose que l'infrastructure existe déjà, et s'arrête avec un message clair si le pipeline Dev-Infra n'a pas encore tourné.
@@ -61,6 +61,39 @@ Les captures sont réparties entre les deux dépôts :
 | ASP-Net-Core | `Capture d'écran 2026-10-03 213243.png` | Site en ligne sur la VM, URL `http://74.241.244.205` visible (Brave) |
 | Dev-Infra | `Capture d'écran du site web.png` | Même site, URL visible (Edge) |
 | Dev-Infra | `Capture d'écran des branches.png` | Historique du pipeline ASP-Net-Core sur `main`, dernier run (déploiement) réussi |
+
+## Sources
+
+**JavaScript / front-end**
+- Bootstrap 5 (CSS + `bootstrap.bundle.min.js`, inclut Popper pour le menu repliable) : https://getbootstrap.com/docs/5.3/getting-started/introduction/
+- jQuery : https://api.jquery.com/
+- jQuery Validation et validation « unobtrusive » utilisées par `_ValidationScriptsPartial.cshtml` : https://jqueryvalidation.org/documentation/ , https://github.com/aspnet/jquery-validation-unobtrusive , https://learn.microsoft.com/aspnet/core/mvc/models/validation#client-side-validation
+- Gestion des bibliothèques côté client dans ASP.NET Core (`wwwroot/lib`, LibMan) : https://learn.microsoft.com/aspnet/core/client-side/libman/
+- Fichiers statiques et `MapStaticAssets` / `asp-append-version` : https://learn.microsoft.com/aspnet/core/fundamentals/map-static-files , https://learn.microsoft.com/aspnet/core/fundamentals/static-files
+
+**Application .NET**
+- Razor Pages : https://learn.microsoft.com/aspnet/core/razor-pages/
+- Fichiers `.slnx` : https://learn.microsoft.com/visualstudio/ide/reference/solution-file
+- `dotnet publish`, identifiants de runtime (`linux-x64`) et déploiement self-contained : https://learn.microsoft.com/dotnet/core/tools/dotnet-publish , https://learn.microsoft.com/dotnet/core/rid-catalog , https://learn.microsoft.com/dotnet/core/deploying/
+- Erreur NETSDK1045 (SDK trop ancien pour le `TargetFramework`) : https://learn.microsoft.com/dotnet/core/tools/sdk-errors/netsdk1045
+- Hébergement sous Linux avec systemd et variables `ASPNETCORE_URLS` / `ASPNETCORE_ENVIRONMENT` : https://learn.microsoft.com/aspnet/core/host-and-deploy/linux-nginx , https://learn.microsoft.com/aspnet/core/fundamentals/environments
+- Dépendance ICU sous Linux (`libicu`) : https://learn.microsoft.com/dotnet/core/install/linux-ubuntu , https://learn.microsoft.com/dotnet/core/runtime-config/globalization
+
+**Pipeline Azure DevOps**
+- Syntaxe YAML (stages, `trigger.paths`, `condition`, `checkout: none`) : https://learn.microsoft.com/azure/devops/pipelines/yaml-schema/
+- Agents auto-hébergés Windows : https://learn.microsoft.com/azure/devops/pipelines/agents/windows-agent
+- Tâches `UseDotNet@2`, `PublishBuildArtifacts@1`, `DownloadBuildArtifacts@1`, `AzureCLI@2` : https://learn.microsoft.com/azure/devops/pipelines/tasks/reference/
+- Masquage d'un secret dans les logs (`##vso[task.setsecret]`) : https://learn.microsoft.com/azure/devops/pipelines/scripts/logging-commands#setsecret-register-a-value-as-a-secret
+- Service connection Azure avec fédération d'identité de charge de travail : https://learn.microsoft.com/azure/devops/pipelines/library/connect-to-azure
+
+**Azure CLI / VM**
+- `az vm run-command invoke` : https://learn.microsoft.com/cli/azure/vm/run-command , https://learn.microsoft.com/azure/virtual-machines/linux/run-command
+- `az storage blob upload` / `generate-sas` / `delete` : https://learn.microsoft.com/cli/azure/storage/blob
+- Bonnes pratiques des SAS (durée courte, lecture seule, HTTPS) : https://learn.microsoft.com/azure/storage/common/storage-sas-overview
+
+**Linux / systemd**
+- Fichiers d'unité de service (`Restart`, `User`, `WorkingDirectory`) : https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html , https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html
+- `AmbientCapabilities` et `CAP_NET_BIND_SERVICE` (port 80 sans root) : https://man7.org/linux/man-pages/man7/capabilities.7.html
 
 ## Lancer en local
 ```
